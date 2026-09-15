@@ -88,6 +88,7 @@
   #addform button:hover { filter: brightness(1.15); }
   .hint { font-size: 10px; color: var(--dim); }
   #demo-btn { background: transparent; border: 1px solid var(--edge); color: var(--dim) !important; }
+  #guide-btn { background: transparent; border: 1px solid var(--amber); color: var(--amber) !important; }
   #pack-btn { background: transparent; border: 1px solid var(--red); color: var(--red) !important; }
 
   #pack-modal {
@@ -141,6 +142,45 @@
   .chan .health.ok { color: var(--green); }
   .chan .health.dead { color: var(--red); }
   .box .tag .deadflag { color: var(--red); font-weight: 900; }
+
+  #guide-modal {
+    position: fixed; inset: 0; background: rgba(0,0,0,.8); z-index: 50;
+    display: none; align-items: center; justify-content: center;
+  }
+  #guide-modal.open { display: flex; }
+  #guide-panel {
+    width: 640px; max-width: 94vw; max-height: 84vh; background: var(--panel);
+    border: 1px solid var(--edge); border-radius: 8px; display: flex; flex-direction: column; overflow: hidden;
+  }
+  #guide-panel .head { padding: 12px 14px; border-bottom: 1px solid var(--edge); display: flex; gap: 8px; align-items: center; }
+  #guide-panel .head b { letter-spacing: 1px; font-size: 13px; }
+  #guide-panel .head input {
+    background: var(--bg); border: 1px solid var(--edge); color: var(--text);
+    padding: 7px 9px; border-radius: 4px; font-size: 12px; flex: 1;
+  }
+  #guide-panel .head button, .gloadall {
+    background: var(--red); color: #fff; border: 0; padding: 7px 12px; border-radius: 4px;
+    font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap;
+  }
+  #guide-list { overflow-y: auto; flex: 1; }
+  .game { padding: 10px 14px; border-bottom: 1px solid #1d1d1d; }
+  .gtop { font-size: 13px; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .gl { color: var(--dim); font-size: 10px; font-weight: 700; letter-spacing: 1px; }
+  .glive { color: var(--red); font-weight: 900; font-size: 11px; }
+  .gtime { color: var(--dim); font-size: 11px; margin-left: auto; }
+  .gnet { display: flex; gap: 6px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+  .nname { font-size: 11px; color: var(--amber); font-weight: 700; min-width: 90px; }
+  .chip {
+    background: var(--bg); border: 1px solid var(--edge); border-radius: 14px;
+    padding: 4px 10px; font-size: 12px; cursor: pointer; user-select: none;
+  }
+  .chip:hover { border-color: var(--red); color: var(--red); }
+  .chip i { color: var(--dim); font-style: normal; font-size: 9px; letter-spacing: 1px; }
+  .chip.added { color: var(--green); border-color: var(--green); }
+  .chip.stream, .chip.none { color: var(--dim); cursor: default; border-style: dashed; }
+  .chip.stream:hover, .chip.none:hover { border-color: var(--edge); color: var(--dim); }
+  .gempty { padding: 14px; color: var(--dim); font-size: 12px; }
+  #guide-foot { padding: 8px 14px; border-top: 1px solid var(--edge); font-size: 10px; color: var(--dim); }
 </style>
 </head>
 <body>
@@ -151,6 +191,19 @@
   <div id="autopilot" class="on"><span class="dot"></span><span id="ap-text">AUTOPILOT</span></div>
   <div id="proxytog" class="on" title="route HLS through local proxy (fixes CORS-blocked channels)">PROXY ON</div>
 </header>
+
+<div id="guide-modal">
+  <div id="guide-panel">
+    <div class="head">
+      <b>📺 GUIDE</b>
+      <input id="guide-search" placeholder="filter games or teams (e.g. eagles, phillies, nfl)">
+      <button id="guide-refresh">REFRESH</button>
+      <button id="guide-close">✕</button>
+    </div>
+    <div id="guide-list"><div class="gempty">loading games…</div></div>
+    <div id="guide-foot">networks matched against loaded packs + US pack (local FOX/NBC feeds) · tap a channel chip to box it</div>
+  </div>
+</div>
 
 <div id="pack-modal">
   <div id="pack-panel">
@@ -193,6 +246,7 @@
       <input id="f-url" placeholder="Stream URL (.m3u8 / YouTube / any embed)" required>
       <input id="f-team" placeholder="NFL team abbrev to track (e.g. PHI) — optional">
       <button type="submit">+ ADD BOX</button>
+      <button type="button" id="guide-btn">📺 GUIDE</button>
       <button type="button" id="pack-btn">📦 SOURCE PACKS</button>
       <button type="button" id="demo-btn">load demo streams</button>
       <div class="hint">keys 1–9 swap · click a box = manual (pauses autopilot 2 min) · m3u8 uses hls.js</div>
@@ -526,11 +580,12 @@ $('pack-modal').addEventListener('click', e => { if (e.target.id === 'pack-modal
 
 function parseM3U(text) {
   const chans = [];
-  const re = /#EXTINF:[^\n]*?,\s*([^\n]+)\s*\n([^\s#][^\n]*)/g;
+  const re = /#EXTINF:([^\n]*?),\s*([^\n]+)\s*\n([^\s#][^\n]*)/g;
   let m;
   while ((m = re.exec(text)) !== null) {
-    const name = m[1].trim(), url = m[2].trim();
-    if (/^https?:\/\//.test(url)) chans.push({ name: name.replace(/\s*\[.*?\]\s*/g, '').trim() || url, url });
+    const attrs = m[1], name = m[2].trim(), url = m[3].trim();
+    const idm = attrs.match(/tvg-id="([^"]*)"/);
+    if (/^https?:\/\//.test(url)) chans.push({ name: name.replace(/\s*\[.*?\]\s*/g, '').trim() || url, url, tvg: idm ? idm[1] : '' });
   }
   return chans;
 }
@@ -576,6 +631,173 @@ function renderPackList() {
   });
 }
 $('pack-search').addEventListener('input', renderPackList);
+
+// ---------- TV guide: who's playing + which pack channel has it ----------
+// ESPN's free scoreboard carries per-game broadcast networks (FOX, NBC, CBS,
+// ESPN…). iptv-org's hosted XMLTV EPG is dead (404s across the board), so the
+// guide matches network names against pack channel names/tvg-ids instead —
+// that answers the real question: "Eagles are on FOX — which of my channels is FOX?"
+
+const GUIDE_SPORTS = [
+  { path: 'football/nfl',    label: 'NFL'  },
+  { path: 'football/ncaa-fbs', label: 'NCAAF' },
+  { path: 'baseball/mlb',    label: 'MLB'  },
+  { path: 'basketball/nba',  label: 'NBA'  },
+  { path: 'basketball/wnba', label: 'WNBA' },
+  { path: 'hockey/nhl',      label: 'NHL'  },
+];
+const US_PACK = 'https://iptv-org.github.io/iptv/countries/us.m3u'; // has local FOX/NBC affiliate feeds
+let guideGames = [];        // [{sport,label,name,state,detail,home,away,hs,as,ts,nets:[{market,names}]}]
+let guideChannels = [];     // merged pack channels available for matching
+let guideLoaded = false;
+
+// network name -> regex tested against channel name + tvg-id
+const NET_MATCHERS = [
+  [/^fox$/i,              /\bfox\b(?!\s*(sports|deportes|news|weather|soccer))/i],
+  [/^nbc$/i,              /\bnbc\b(?!\s*(sports|news))|(?<![a-z])nbc\.us@|^nbc-/i],
+  [/^cbs$/i,              /\bcbs\b(?!\s*(sports|news))|(?<![a-z])cbs\.us@/i],
+  [/^abc$/i,              /\babc\b(?!\s*news)|(?<![a-z])abc\.us@/i],
+  [/^espn$/i,             /^espn\b(?!\s*(news|u|deportes|2|3|4|8|classic|plus|unlmtd))/i],
+  [/^espn2$/i,            /\bespn\s*2\b|espn2\.us@/i],
+  [/^espn\s*deportes$/i,  /espn\s*deportes/i],
+  [/^fs1$|^fox sports 1$/i, /fox\s*sports\s*1|foxsports1\.us@/i],
+  [/^fs2$|^fox sports 2$/i, /fox\s*sports\s*2|foxsports2\.us@/i],
+  [/^nfl network$/i,      /nfl\s*network/i],
+  [/^nfl network$/i,      /nfl\s*network/i],
+  [/^mlb network$|^mlb net$/i, /mlb\s*network/i],
+  [/^nba tv$/i,           /nba\s*tv/i],
+  [/^nbc sports$/i,       /nbc\s*sports/i],
+  [/(sportsnet|sn|yes|masn|sny|marquee|bally|fan ?duel|sinclair|root|at&t|att\s*sportsnet|space city|sportsnet la|gray media)/i, null],
+];
+// streaming-only services: never in free packs — show as "streaming" so users
+// know they need that app, not that Open Zone is broken
+const NET_STREAMS = /^((peacock|paramount\+|espn\s*plus|espn\+|netflix|prime\s*video|amazon\s*prime|max|hbo\s*max|apple\s*tv|dazn|youtube(\.tv)?|tubi|fubo|espn app|espn3|fox sports app|cbs sports app|nfl\+|nfl network app|.*unlmtd.*|.*\.tv))$/i;
+
+function netToMatcher(net) {
+  const n = net.trim();
+  if (NET_STREAMS.test(n)) return { type: 'stream', label: n };
+  for (const [netRe, chanRe] of NET_MATCHERS) {
+    if (netRe.test(n)) {
+      if (chanRe) return { type: 'pack', chanRe };
+      // regional net with no dedicated matcher: fuzzy on distinctive words
+      const words = n.replace(/[^a-z0-9 ]/gi, ' ').split(/\s+/).filter(w => w.length > 3 && !/^(sports|network|net|tv|the|media)$/i.test(w));
+      if (!words.length) return null;
+      // word-bounded + name-only: tvg-ids are CamelCase and would substring-match
+      return { type: 'pack', nameOnly: true, chanRe: new RegExp('\\b' + words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + '\\b', 'i') };
+    }
+  }
+  return null;
+}
+
+function matchNetToChannels(net) {
+  const mtc = netToMatcher(net);
+  if (!mtc) return { type: 'none' };
+  if (mtc.type === 'stream') return { type: 'stream', label: mtc.label };
+  const hits = guideChannels.filter(c => mtc.chanRe.test(c.name) || (!mtc.nameOnly && c.tvg && mtc.chanRe.test(c.tvg)));
+  return hits.length ? { type: 'pack', chans: hits.slice(0, 4) } : { type: 'none' };
+}
+
+async function loadGuideChannels() {
+  guideChannels = [...packChannels];
+  if (guideChannels.length < 300) {
+    try {
+      const r = await fetch(US_PACK, { cache: 'force-cache' });
+      const t = await r.text();
+      const us = parseM3U(t);
+      // locals beat national feeds for market games: put US pack first
+      guideChannels = us.concat(guideChannels);
+    } catch { /* US pack optional — loaded packs still work */ }
+  }
+}
+
+async function fetchGuideSport(sp) {
+  try {
+    const r = await fetch(`https://site.web.api.espn.com/apis/site/v2/sports/${sp.path}/scoreboard`, { cache: 'no-store' });
+    const j = await r.json();
+    return (j.events || []).map(ev => {
+      const comp = ev.competitions[0];
+      const home = comp.competitors.find(c => c.homeAway === 'home');
+      const away = comp.competitors.find(c => c.homeAway === 'away');
+      const nets = (comp.broadcasts || []).map(b => ({ market: b.market, names: b.names || [] }));
+      return {
+        sport: sp.path, label: sp.label, id: ev.id,
+        name: ev.name, state: ev.status.type.state, detail: ev.status.type.shortDetail,
+        home: home.team.abbreviation, away: away.team.abbreviation,
+        hs: home.score, as: away.score, ts: ev.date,
+        nets,
+      };
+    });
+  } catch { return []; }
+}
+
+async function loadGuide(force) {
+  if (guideLoaded && !force) return;
+  const list = $('guide-list');
+  list.innerHTML = '<div class="gempty">loading games…</div>';
+  await loadGuideChannels();
+  const all = await Promise.all(GUIDE_SPORTS.map(fetchGuideSport));
+  guideGames = all.flat();
+  guideGames.sort((a, b) => (a.state === 'in') - (b.state === 'in') || new Date(a.ts) - new Date(b.ts));
+  guideLoaded = true;
+  renderGuide();
+}
+
+function chipHtml(match) {
+  if (match.type === 'pack') return match.chans.map(c =>
+    `<span class="chip" data-url="${esc(c.url)}" data-name="${esc(c.name)}">${esc(c.name)} <i>BOX</i></span>`).join('');
+  if (match.type === 'stream') return `<span class="chip stream">${esc(match.label)} <i>APP</i></span>`;
+  return `<span class="chip none">no free channel <i>N/A</i></span>`;
+}
+
+function renderGuide() {
+  const q = $('guide-search').value.trim().toLowerCase();
+  const games = guideGames.filter(g => !q || g.name.toLowerCase().includes(q) ||
+    `${g.away} ${g.home} ${g.label}`.toLowerCase().includes(q) || (g.nets.some(n => n.names.join(' ').toLowerCase().includes(q))));
+  const el = $('guide-list');
+  if (!games.length) { el.innerHTML = '<div class="gempty">no games match — try clearing the filter</div>'; return; }
+  el.innerHTML = '';
+  games.forEach(g => {
+    const live = g.state === 'in';
+    const div = document.createElement('div');
+    div.className = 'game';
+    const netsHtml = g.nets.map(n => {
+      const chips = n.names.map(nm => {
+        const match = matchNetToChannels(nm);
+        return `<span class="nname">${esc(nm)}${n.market === 'national' ? '' : ` <i style="font-style:normal;color:var(--dim)">(${esc(n.market)})</i>`}</span>` + chipHtml(match);
+      }).join('');
+      return `<div class="gnet">${chips}</div>`;
+    }).join('');
+    div.innerHTML = `
+      <div class="gtop">
+        <span class="gl">${g.label}</span>
+        ${live ? `<span class="glive">● LIVE ${esc(g.away)} ${g.as}–${g.hs} ${g.home}</span>` : `<span>${esc(g.name)}</span>`}
+        <span class="gtime">${esc(g.detail)}</span>
+      </div>${netsHtml}`;
+    el.appendChild(div);
+  });
+  // mark chips whose channel is already boxed
+  el.querySelectorAll('.chip[data-url]').forEach(ch => {
+    if (boxes.some(b => b.url === ch.dataset.url)) ch.classList.add('added');
+  });
+}
+
+$('guide-list').addEventListener('click', e => {
+  const ch = e.target.closest('.chip[data-url]');
+  if (!ch) return;
+  boxes.push({ name: ch.dataset.name, url: ch.dataset.url, team: '' });
+  render();
+  ch.classList.add('added');
+  setStatus(`guide → added box: ${ch.dataset.name}`);
+});
+
+$('guide-btn').addEventListener('click', () => {
+  $('guide-modal').classList.add('open');
+  loadGuide(false);
+});
+$('guide-close').addEventListener('click', () => $('guide-modal').classList.remove('open'));
+$('guide-modal').addEventListener('click', e => { if (e.target.id === 'guide-modal') $('guide-modal').classList.remove('open'); });
+$('guide-refresh').addEventListener('click', () => loadGuide(true));
+$('guide-search').addEventListener('input', () => guideLoaded && renderGuide());
 
 // ---------- boot ----------
 render();
