@@ -118,6 +118,29 @@
   #pack-list .chan:hover { background: #1e1e1e; color: var(--red); }
   #pack-list .chan .u { color: var(--dim); font-size: 10px; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #pack-list .chan.added { color: var(--green); }
+
+  #pack-modes { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px; border-bottom: 1px solid var(--edge); }
+  #pack-modes button {
+    background: transparent; border: 1px solid var(--edge); color: var(--dim);
+    font-size: 11px; font-weight: 700; letter-spacing: 1px; padding: 5px 10px;
+    border-radius: 14px; cursor: pointer; white-space: nowrap;
+  }
+  #pack-modes button:hover { border-color: var(--dim); color: var(--text); }
+  #pack-modes button.active { border-color: var(--red); color: var(--red); }
+
+  #pack-tools { display: flex; gap: 6px; padding: 10px 14px; border-bottom: 1px solid var(--edge); align-items: center; }
+  #pack-tools button {
+    background: transparent; border: 1px solid var(--edge); color: var(--dim);
+    font-size: 11px; font-weight: 700; letter-spacing: 1px; padding: 6px 10px;
+    border-radius: 4px; cursor: pointer; white-space: nowrap;
+  }
+  #pack-tools button:hover { border-color: var(--dim); color: var(--text); }
+  #pack-tools #hide-dead.on { border-color: var(--green); color: var(--green); }
+  #scan-label { font-size: 10px; color: var(--dim); flex: 1; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chan .health { font-weight: 900; }
+  .chan .health.ok { color: var(--green); }
+  .chan .health.dead { color: var(--red); }
+  .box .tag .deadflag { color: var(--red); font-weight: 900; }
 </style>
 </head>
 <body>
@@ -132,11 +155,24 @@
 <div id="pack-modal">
   <div id="pack-panel">
     <div class="head"><b>📦 SOURCE PACKS</b><button id="pack-close">✕</button></div>
+    <div id="pack-modes">
+      <button data-mode="sports">SPORTS</button>
+      <button data-mode="movies">MOVIES</button>
+      <button data-mode="news">NEWS</button>
+      <button data-mode="documentaries">DOCS</button>
+      <button data-mode="kids">KIDS</button>
+      <button data-mode="music">MUSIC</button>
+    </div>
     <div id="pack-url-row">
-      <input id="pack-url" placeholder="Paste any .m3u / .m3u8 playlist URL" value="https://iptv-org.github.io/iptv/categories/sports.m3u">
+      <input id="pack-url" placeholder="Paste any .m3u / .m3u8 playlist URL">
       <button id="pack-load">LOAD</button>
     </div>
     <div style="padding:10px 14px;border-bottom:1px solid var(--edge)"><input id="pack-search" placeholder="search channels… (e.g. fight, nfl, red bull)"></div>
+    <div id="pack-tools">
+      <button id="pack-scan">SCAN DEAD</button>
+      <button id="hide-dead">HIDE DEAD: OFF</button>
+      <span id="scan-label"></span>
+    </div>
     <div id="pack-list"><div style="padding:14px;color:var(--dim);font-size:12px">Load a pack to browse channels. Tap a channel to add it as a box.</div></div>
   </div>
 </div>
@@ -242,7 +278,8 @@ function render() {
     div.className = 'box' + (i === mainIdx ? ' main' : '') + (b.hot ? ' hot' : '');
     div.querySelector('.num').textContent = `${i + 1} · ${b.name}`;
     const rz = b.hot && b.sitLine ? ` <span class="rzflag">● ${b.sitLine}</span>` : '';
-    div.querySelector('.meta').innerHTML = `${b.score || ''}${rz}`;
+    const dead = healthMap[b.url] === 'dead' ? ' <span class="deadflag">✕ DEAD</span>' : '';
+    div.querySelector('.meta').innerHTML = `${b.score || ''}${rz}${dead}`;
   });
   // keep delete handlers aligned after removals
   boxEls.forEach((el, i) => el.querySelector('.del').dataset.del = i);
@@ -397,7 +434,93 @@ function updateTicker() {
 // ---------- source packs (M3U playlists) ----------
 let packChannels = [];
 
-$('pack-btn').addEventListener('click', () => { $('pack-modal').classList.add('open'); });
+// ---------- mode strip: one-tap category packs ----------
+const MODE_PACKS = {
+  sports:         'https://iptv-org.github.io/iptv/categories/sports.m3u',
+  movies:         'https://iptv-org.github.io/iptv/categories/movies.m3u',
+  news:           'https://iptv-org.github.io/iptv/categories/news.m3u',
+  documentaries:  'https://iptv-org.github.io/iptv/categories/documentary.m3u',
+  kids:           'https://iptv-org.github.io/iptv/categories/kids.m3u',
+  music:          'https://iptv-org.github.io/iptv/categories/music.m3u',
+};
+const MODE_SEARCH_HINTS = {
+  sports: 'fight, nfl, red bull', movies: 'action, comedy, horror',
+  news: 'live, world, weather', documentaries: 'history, nature, space',
+  kids: 'cartoon, disney, ninja', music: 'hits, rock, hip',
+};
+let currentMode = localStorage.getItem('orz_mode') || 'sports';
+
+function setMode(mode, autoload) {
+  currentMode = mode;
+  localStorage.setItem('orz_mode', mode);
+  document.querySelectorAll('#pack-modes button').forEach(b =>
+    b.classList.toggle('active', b.dataset.mode === mode));
+  $('pack-url').value = MODE_PACKS[mode] || '';
+  $('pack-search').placeholder = `search channels… (e.g. ${MODE_SEARCH_HINTS[mode] || 'channel name'})`;
+  if (autoload) loadPack();
+}
+document.querySelectorAll('#pack-modes button').forEach(b =>
+  b.addEventListener('click', () => setMode(b.dataset.mode, true)));
+
+// ---------- dead-link scanner ----------
+let healthMap = JSON.parse(sessionStorage.getItem('orz_health') || '{}');  // url -> 'ok' | 'dead'
+let hideDead = false;
+let scanning = false;
+
+function saveHealth() { sessionStorage.setItem('orz_health', JSON.stringify(healthMap)); }
+
+async function checkOne(url) {
+  try {
+    const r = await fetch('/check?url=' + encodeURIComponent(url));
+    const j = await r.json();
+    healthMap[url] = j.ok ? 'ok' : 'dead';
+  } catch { healthMap[url] = 'dead'; }
+  saveHealth();
+}
+
+async function scanPack() {
+  if (scanning || !packChannels.length) return;
+  // scan the currently visible (filtered) list, capped at 100
+  const q = $('pack-search').value.trim().toLowerCase();
+  const targets = packChannels.filter(c => !q || c.name.toLowerCase().includes(q))
+    .filter(c => !(c.url in healthMap)).slice(0, 100).map(c => c.url);
+  if (!targets.length) { renderPackList(); return; }
+  scanning = true;
+  $('pack-scan').textContent = 'SCANNING…';
+  let done = 0;
+  const POOL = 8, queue = [...targets];
+  async function worker() {
+    while (queue.length) {
+      const u = queue.shift();
+      await checkOne(u);
+      done++;
+      $('scan-label').textContent = `${done}/${targets.length} checked · ${Object.values(healthMap).filter(v => v === 'dead').length} dead`;
+      renderPackList();
+    }
+  }
+  await Promise.all(Array.from({ length: POOL }, worker));
+  scanning = false;
+  $('pack-scan').textContent = 'RESCAN';
+  $('scan-label').textContent = `done · ${Object.values(healthMap).filter(v => v === 'dead').length} dead hidden-eligible`;
+  renderPackList();
+  render();  // refresh dead flags on boxes
+}
+$('pack-scan').addEventListener('click', scanPack);
+
+$('hide-dead').addEventListener('click', () => {
+  hideDead = !hideDead;
+  const el = $('hide-dead');
+  el.classList.toggle('on', hideDead);
+  el.textContent = hideDead ? 'HIDE DEAD: ON' : 'HIDE DEAD: OFF';
+  renderPackList();
+});
+
+$('pack-btn').addEventListener('click', () => {
+  $('pack-modal').classList.add('open');
+  // auto-load last (or default) mode on first open
+  if (!packChannels.length && !$('pack-url').value.trim()) setMode(currentMode, true);
+  else setMode(currentMode, false);
+});
 $('pack-close').addEventListener('click', () => $('pack-modal').classList.remove('open'));
 $('pack-modal').addEventListener('click', e => { if (e.target.id === 'pack-modal') $('pack-modal').classList.remove('open'); });
 
@@ -429,15 +552,20 @@ $('pack-url').addEventListener('keydown', e => { if (e.key === 'Enter') loadPack
 
 function renderPackList() {
   const q = $('pack-search').value.trim().toLowerCase();
-  const list = packChannels.filter(c => !q || c.name.toLowerCase().includes(q)).slice(0, 300);
+  const list = packChannels
+    .filter(c => !q || c.name.toLowerCase().includes(q))
+    .filter(c => !(hideDead && healthMap[c.url] === 'dead'))
+    .slice(0, 300);
   const el = $('pack-list');
   if (!list.length) { el.innerHTML = '<div style="padding:14px;color:var(--dim);font-size:12px">no matches</div>'; return; }
   el.innerHTML = '';
   list.forEach((c, idx) => {
     const actual = packChannels.indexOf(c);
+    const h = healthMap[c.url];
+    const dot = h === 'ok' ? '<span class="health ok">●</span>' : h === 'dead' ? '<span class="health dead">✕</span>' : '';
     const div = document.createElement('div');
     div.className = 'chan' + (boxes.some(b => b.url === c.url) ? ' added' : '');
-    div.innerHTML = `<span>${esc(c.name)}</span><span class="u">${esc(c.url.slice(0, 60))}</span>`;
+    div.innerHTML = `<span>${esc(c.name)} ${dot}</span><span class="u">${esc(c.url.slice(0, 60))}</span>`;
     div.onclick = () => {
       boxes.push({ name: c.name, url: c.url, team: '' });
       render();

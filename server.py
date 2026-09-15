@@ -11,6 +11,8 @@ import http.server
 import socketserver
 import urllib.request
 import urllib.parse
+import urllib.error
+import json
 import re
 import os
 import sys
@@ -71,8 +73,56 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/proxy":
             return self.handle_proxy(urllib.parse.parse_qs(parsed.query).get("url", [""])[0])
-        # block plalylist requests (we never added it; keep static minimal)
+        if parsed.path == "/check":
+            return self.handle_check(urllib.parse.parse_qs(parsed.query).get("url", [""])[0])
+        # block plalyist requests (we never added it; keep static minimal)
         return super().do_GET()
+
+    def handle_check(self, url):
+        """Dead-link scanner: GET (not HEAD — many CDNs reject HEAD) the stream
+        URL through the same fetch path the player uses. Reports ok/dead as JSON.
+        A channel can be alive but unplayable (HEVC-only, geo-blocked) — this is
+        a liveness signal, not a playability guarantee."""
+        if not url.startswith(("http://", "https://")):
+            self._json(400, {"ok": False, "why": "bad url"})
+            return
+
+        def is_hls(u, ctype=""):
+            return ".m3u8" in u.split("?")[0] or "mpegurl" in ctype.lower()
+
+        # iframes / pages (YouTube etc.) can't be cheaply verified — treat as ok
+        if not is_hls(url):
+            self._json(200, {"ok": True, "why": "non-hls (not checked)"})
+            return
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                ctype = r.headers.get("Content-Type", "")
+                body = r.read(65536).decode("utf-8", errors="replace")
+            if not is_hls(url, ctype) and "#EXTM3U" not in body:
+                self._json(200, {"ok": False, "why": "not a manifest"})
+                return
+            if "#EXT-X-STREAM-INF" in body:
+                # master playlist: it's a real manifest, good enough
+                self._json(200, {"ok": True, "why": "master"})
+                return
+            # media playlist: look for at least one segment near live edge
+            lines = [l for l in body.splitlines() if l and not l.startswith("#")]
+            self._json(200, {"ok": bool(lines), "why": "media" if lines else "empty playlist"})
+        except urllib.error.HTTPError as e:
+            self._json(200, {"ok": False, "why": f"http {e.code}"})
+        except Exception as e:
+            self._json(200, {"ok": False, "why": str(e)[:120]})
+
+    def _json(self, code, obj):
+        data = json.dumps(obj).encode()
+        self.send_response(code)
+        self._cors()
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
 
     def handle_proxy(self, url):
         if not url.startswith(("http://", "https://")):

@@ -12,6 +12,8 @@ NFL RedZone's magic isn't the video — it's the switching brain: always showing
 - **Autopilot** — polls ESPN's free scoreboard API every 15s, computes an "excitement score" per live game (red zone +60, one-score game +25, 4th down +20), and auto-swaps the main stage to the hottest one
 - **Manual always wins** — click a box or press `1`–`9`; autopilot pauses for 2 minutes
 - **Source packs** — paste any M3U playlist URL (e.g. [iptv-org](https://github.com/iptv-org/iptv)), browse/search channels, tap to box them
+- **Mode strip** — one-tap category packs (SPORTS · MOVIES · NEWS · DOCS · KIDS · MUSIC); your last mode is remembered
+- **Dead-link scanner** — SCAN DEAD probes each channel's manifest (via the server's `/check` endpoint) and marks it 🟢 live / ✕ dead; HIDE DEAD filters them out, and boxed channels that die get a ✕ DEAD badge
 - **CORS-unlocking proxy** — the built-in server rewrites manifests and streams segments through itself, so cross-origin-blocked channels play anyway
 - **LAN-ready** — host-aware proxy rewriting means phones/TVs on your network get working stream URLs automatically
 - **League-wide ticker** — every NFL score, red-zone games flagged, scrolling RedZone-style
