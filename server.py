@@ -16,6 +16,10 @@ import json
 import re
 import os
 import sys
+import gzip
+import time
+import datetime
+import xml.etree.ElementTree as ET
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8790
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -54,6 +58,89 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # quiet
 
+    # ---------- /pluto: channel list + EPG "what's on now" (cached 1h) ----------
+    # Pluto's keyless API gives playable channels; matthuisman's i.mjh.nz
+    # publishes daily XMLTV EPG keyed by the same channel _id. Both are free,
+    # no accounts. Server-side merge + cache keeps ~8MB of XML off the browser.
+    PLUTO_CHANS = "https://api.pluto.tv/v2/channels.json"
+    PLUTO_EPG = "https://raw.githubusercontent.com/matthuisman/i.mjh.nz/master/PlutoTV/us.xml.gz"
+    _pluto_cache = None
+    _pluto_ts = 0.0
+    PLUTO_TTL = 3600  # seconds
+
+    @classmethod
+    def _pluto_data(cls):
+        now = time.time()
+        if cls._pluto_cache and now - cls._pluto_ts < cls.PLUTO_TTL:
+            return cls._pluto_cache
+        chans = {}
+        order = []
+        try:
+            req = urllib.request.Request(cls.PLUTO_CHANS, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                for c in json.loads(r.read().decode()):
+                    if c.get("isStitched") and c.get("stitched", {}).get("urls"):
+                        u = c["stitched"]["urls"][0]["url"]
+                        # stitcher rejects empty device params — fill sane web values
+                        for k, v in (("deviceId", "unknown"), ("deviceMake", "web"),
+                                     ("deviceModel", "web"), ("deviceType", "web"),
+                                     ("appName", "web")):
+                            u = re.sub(rf"([?&]{k}=)(&|\s|$)", rf"\g<1>{v}\g<2>", u)
+                            if f"{k}=" not in u.split("?")[-1]:
+                                u += ("&" if "?" in u else "?") + f"{k}={v}"
+                        chans[c["_id"]] = {
+                            "id": c["_id"], "name": c.get("name", ""),
+                            "cat": c.get("category", ""), "url": u,
+                            "logo": (c.get("colorLogoPNG") or c.get("logo") or {}).get("path", ""),
+                        }
+                        order.append(c["_id"])
+        except Exception:
+            pass
+        # EPG: map channel _id -> list of (start, stop, title, sub, desc)
+        epg = {}
+        try:
+            req = urllib.request.Request(cls.PLUTO_EPG, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                raw = gzip.decompress(r.read())
+            root = ET.fromstring(raw)
+            for pr in root.iter("programme"):
+                cid = pr.get("channel")
+                title = pr.findtext("title") or ""
+                sub = pr.findtext("sub-title") or ""
+                desc = pr.findtext("desc") or ""
+                ep = ""
+                for en in pr.findall("episode-num"):
+                    if en.get("system") == "onscreen" and en.text and en.text.startswith("S"):
+                        ep = en.text
+                try:
+                    start = datetime.datetime.strptime(pr.get("start"), "%Y%m%d%H%M%S %z").timestamp()
+                    stop = datetime.datetime.strptime(pr.get("stop"), "%Y%m%d%H%M%S %z").timestamp()
+                except (TypeError, ValueError):
+                    continue
+                epg.setdefault(cid, []).append((start, stop, title, sub, desc, ep))
+        except Exception:
+            pass
+        cls._pluto_cache = (chans, epg, order)
+        cls._pluto_ts = now
+        return cls._pluto_cache
+
+    def handle_pluto(self):
+        chans, epg, order = self._pluto_data()
+        now = time.time()
+        out = []
+        for cid in order:
+            c = chans[cid]
+            nowp = nextp = None
+            for (s, e, title, sub, desc, ep) in epg.get(cid, []):
+                if s <= now < e:
+                    nowp = {"t": title, "s": s, "e": e, "sub": sub, "desc": desc[:200], "ep": ep}
+                elif s >= now and nextp is None:
+                    nextp = {"t": title, "s": s, "e": e, "ep": ep}
+                if nowp and nextp:
+                    break
+            out.append({**c, "now": nowp, "next": nextp})
+        self._json(200, {"ts": now, "n": len(out), "channels": out})
+
     def _origin(self):
         # use the Host header the client connected to, so proxied URLs work
         # from any device on the LAN (phone/TV), not just localhost
@@ -75,6 +162,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.handle_proxy(urllib.parse.parse_qs(parsed.query).get("url", [""])[0])
         if parsed.path == "/check":
             return self.handle_check(urllib.parse.parse_qs(parsed.query).get("url", [""])[0])
+        if parsed.path == "/pluto":
+            return self.handle_pluto()
         # block plalyist requests (we never added it; keep static minimal)
         return super().do_GET()
 

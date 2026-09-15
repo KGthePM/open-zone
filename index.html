@@ -154,6 +154,35 @@
   }
   #guide-panel .head { padding: 12px 14px; border-bottom: 1px solid var(--edge); display: flex; gap: 8px; align-items: center; }
   #guide-panel .head b { letter-spacing: 1px; font-size: 13px; }
+  #guide-tabs { display: flex; gap: 6px; padding: 8px 14px 0 14px; border-bottom: 1px solid var(--edge); }
+  #guide-tabs button {
+    background: transparent; border: 1px solid var(--edge); border-bottom: 0; color: var(--dim);
+    font-size: 11px; font-weight: 700; letter-spacing: 1px; padding: 6px 12px;
+    border-radius: 6px 6px 0 0; cursor: pointer;
+  }
+  #guide-tabs button.active { border-color: var(--red); color: var(--red); background: var(--panel); }
+  #pluto-cats { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 14px; border-bottom: 1px solid var(--edge); }
+  #pluto-cats button {
+    background: transparent; border: 1px solid var(--edge); color: var(--dim);
+    font-size: 10px; font-weight: 700; letter-spacing: 1px; padding: 4px 9px;
+    border-radius: 12px; cursor: pointer; white-space: nowrap;
+  }
+  #pluto-cats button.active { border-color: var(--amber); color: var(--amber); }
+  .pchan { padding: 9px 14px; border-bottom: 1px solid #1d1d1d; cursor: pointer; }
+  .pchan:hover { background: #1e1e1e; }
+  .pchan.added { border-left: 3px solid var(--green); }
+  .ptop { display: flex; gap: 8px; align-items: baseline; font-size: 13px; flex-wrap: wrap; }
+  .ptop .chname { font-weight: 700; }
+  .ptop .pcat { color: var(--dim); font-size: 9px; font-weight: 700; letter-spacing: 1px; }
+  .ptop .pnow { color: var(--amber); }
+  .ptop .pnext { color: var(--dim); font-size: 11px; margin-left: auto; }
+  .pbar { height: 3px; background: var(--edge); border-radius: 2px; margin-top: 6px; overflow: hidden; }
+  .pbar div { height: 100%; background: var(--amber); }
+  .pdesc { font-size: 10px; color: var(--dim); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #pluto-list { display: none; }
+  #pluto-list.on { display: block; }
+  #guide-list.on-sports { display: block; }
+  #guide-list:not(.on-sports) { display: none; }
   #guide-panel .head input {
     background: var(--bg); border: 1px solid var(--edge); color: var(--text);
     padding: 7px 9px; border-radius: 4px; font-size: 12px; flex: 1;
@@ -200,7 +229,13 @@
       <button id="guide-refresh">REFRESH</button>
       <button id="guide-close">✕</button>
     </div>
-    <div id="guide-list"><div class="gempty">loading games…</div></div>
+    <div id="guide-tabs">
+      <button data-tab="sports" class="active">SPORTS</button>
+      <button data-tab="tv">TV &amp; MOVIES</button>
+    </div>
+    <div id="guide-list" class="on-sports"><div class="gempty">loading games…</div></div>
+    <div id="pluto-cats"></div>
+    <div id="pluto-list"><div class="gempty">loading channels…</div></div>
     <div id="guide-foot">networks matched against loaded packs + US pack (local FOX/NBC feeds) · tap a channel chip to box it</div>
   </div>
 </div>
@@ -797,7 +832,105 @@ $('guide-btn').addEventListener('click', () => {
 $('guide-close').addEventListener('click', () => $('guide-modal').classList.remove('open'));
 $('guide-modal').addEventListener('click', e => { if (e.target.id === 'guide-modal') $('guide-modal').classList.remove('open'); });
 $('guide-refresh').addEventListener('click', () => loadGuide(true));
-$('guide-search').addEventListener('input', () => guideLoaded && renderGuide());
+$('guide-search').addEventListener('input', () => { guideLoaded && renderGuide(); renderPluto(); });
+
+// ---------- guide tab: sports vs TV & movies ----------
+let guideTab = 'sports';
+document.querySelectorAll('#guide-tabs button').forEach(b => b.addEventListener('click', () => {
+  guideTab = b.dataset.tab;
+  document.querySelectorAll('#guide-tabs button').forEach(x => x.classList.toggle('active', x === b));
+  $('guide-list').classList.toggle('on-sports', guideTab === 'sports');
+  $('pluto-list').classList.toggle('on', guideTab === 'tv');
+  $('pluto-cats').style.display = guideTab === 'tv' ? 'flex' : 'none';
+  $('guide-foot').textContent = guideTab === 'tv'
+    ? 'Pluto TV keyless API + i.mjh.nz daily EPG · tap anywhere on a channel to box it'
+    : 'networks matched against loaded packs + US pack (local FOX/NBC feeds) · tap a channel chip to box it';
+  $('guide-search').placeholder = guideTab === 'tv' ? 'filter shows or channels (e.g. seinfeld, star trek, ncis)' : 'filter games or teams (e.g. eagles, phillies, nfl)';
+  if (guideTab === 'tv') loadPluto();
+}));
+
+// ---------- Pluto TV & movies board ----------
+let plutoChannels = [];    // server-merged now/next data
+let plutoCat = 'all';
+let plutoLoaded = false;
+const PLUTO_MAX_CATS = 10;
+
+async function loadPluto(force) {
+  if (plutoLoaded && !force) return;
+  $('pluto-list').innerHTML = '<div class="gempty">loading channels…</div>';
+  try {
+    const r = await fetch('/pluto', { cache: 'no-store' });
+    const j = await r.json();
+    plutoChannels = j.channels || [];
+    plutoLoaded = true;
+    renderPlutoCats();
+    renderPluto();
+  } catch (e) {
+    $('pluto-list').innerHTML = `<div class="gempty">EPG load failed: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderPlutoCats() {
+  const counts = {};
+  plutoChannels.forEach(c => { counts[c.cat || 'Other'] = (counts[c.cat || 'Other'] || 0) + 1; });
+  const cats = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, PLUTO_MAX_CATS);
+  const el = $('pluto-cats');
+  el.innerHTML = '';
+  [['all', plutoChannels.length]].concat(cats).forEach(([name, n], i) => {
+    const b = document.createElement('button');
+    b.textContent = `${name.toUpperCase()} ${n}`;
+    if ((i === 0 && plutoCat === 'all') || name === plutoCat) b.classList.add('active');
+    b.onclick = () => { plutoCat = name; renderPlutoCats(); renderPluto(); };
+    el.appendChild(b);
+  });
+}
+
+function fmtClock(ts) {
+  return new Date(ts * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function renderPluto() {
+  if (!plutoChannels.length) return;
+  const q = $('guide-search').value.trim().toLowerCase();
+  let list = plutoChannels;
+  if (plutoCat !== 'all') list = list.filter(c => (c.cat || 'Other') === plutoCat);
+  if (q) list = list.filter(c =>
+    c.name.toLowerCase().includes(q) || (c.now && c.now.t.toLowerCase().includes(q)) ||
+    (c.now && (c.now.sub || '').toLowerCase().includes(q)));
+  list = list.slice(0, 300);
+  const el = $('pluto-list');
+  if (!list.length) { el.innerHTML = '<div class="gempty">no matches</div>'; return; }
+  el.innerHTML = '';
+  const now = Date.now() / 1000;
+  list.forEach(c => {
+    const n = c.now;
+    const div = document.createElement('div');
+    div.className = 'pchan' + (boxes.some(b => b.url === c.url) ? ' added' : '');
+    let prog = '', desc = '', next = '';
+    if (n) {
+      const pct = Math.max(0, Math.min(100, ((now - n.s) / (n.e - n.s)) * 100));
+      prog = `<div class="pbar"><div style="width:${pct.toFixed(0)}%"></div></div>`;
+      desc = n.desc ? `<div class="pdesc">${esc(n.desc)}</div>` : '';
+      next = c.next ? `↻ next: ${esc(c.next.t)} ${c.next.ep || ''} @ ${fmtClock(c.next.s)}` : '';
+    } else {
+      next = 'no guide data — play anyway';
+    }
+    div.innerHTML = `
+      <div class="ptop">
+        <span class="chname">${esc(c.name)}</span>
+        <span class="pcat">${esc(c.cat || '')}</span>
+        <span class="pnow">${n ? '▶ ' + esc(n.t) + (n.ep ? ` <i style="font-style:normal;color:var(--dim)">${esc(n.ep)}</i>` : '') : ''}</span>
+        <span class="pnext">${next}</span>
+      </div>${prog}${desc}`;
+    div.onclick = () => {
+      boxes.push({ name: c.name, url: c.url, team: '' });
+      render();
+      div.classList.add('added');
+      setStatus(`guide → added box: ${c.name}`);
+    };
+    el.appendChild(div);
+  });
+}
 
 // ---------- boot ----------
 render();
