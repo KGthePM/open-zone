@@ -1,6 +1,6 @@
 # 📺 Idea: TV Guide ("what's on right now")
 
-**Status:** not built yet — this is the plan Kyle greenlit for later.
+**Status:** SHIPPED 9/15/26 (commit 4c00edc) — but pivoted from this plan.
 **Stacks on top of:** mode strip + dead-link scanner (both shipped).
 
 ## The idea
